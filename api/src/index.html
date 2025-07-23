@@ -3,51 +3,45 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>AI 음성 텍스트 변환기 (디버그 모드)</title>
-    <!-- Tailwind CSS CDN 추가 -->
+    <title>AI 음성 분석기</title>
     <script src="https://cdn.tailwindcss.com"></script>
     <style>
-        /* 로딩 스피너를 위한 CSS */
-        .loader {
-            border: 4px solid #f3f3f3;
-            border-radius: 50%;
-            border-top: 4px solid #3498db;
-            width: 40px;
-            height: 40px;
-            animation: spin 2s linear infinite;
-        }
-        @keyframes spin {
-            0% { transform: rotate(0deg); }
-            100% { transform: rotate(360deg); }
-        }
+        .loader { border: 4px solid #f3f3f3; border-radius: 50%; border-top: 4px solid #3498db; width: 40px; height: 40px; animation: spin 2s linear infinite; }
+        @keyframes spin { 0% { transform: rotate(0deg); } 100% { transform: rotate(360deg); } }
     </style>
 </head>
 <body class="bg-gray-100 flex items-center justify-center min-h-screen py-12">
-    <div class="w-full max-w-2xl mx-auto bg-white rounded-2xl shadow-xl p-8 space-y-6">
+    <div class="w-full max-w-3xl mx-auto bg-white rounded-2xl shadow-xl p-8 space-y-6">
         
         <div class="text-center">
-            <h1 class="text-3xl font-bold text-gray-800">AI 음성 텍스트 변환기</h1>
-            <p class="text-gray-500 mt-2">오디오 파일을 업로드하여 시간대별 텍스트로 변환하세요.</p>
+            <h1 class="text-3xl font-bold text-gray-800">AI 음성 분석기</h1>
+            <p class="text-gray-500 mt-2">오디오를 텍스트 변환, 요약 및 핵심 구절을 추출합니다.</p>
         </div>
 
         <div class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-500 transition-colors" id="dropZone">
             <input type="file" id="audioFile" accept="audio/*" class="hidden">
             <p class="text-gray-500" id="dropZoneText">여기에 파일을 드래그하거나 클릭하여 선택하세요.</p>
-            <p class="text-sm text-gray-400 mt-2">지원 형식: MP3, WAV, M4A 등</p>
         </div>
 
         <button onclick="uploadFile()" id="uploadButton" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-all duration-300 disabled:bg-gray-400">
-            업로드 및 변환 시작
+            업로드 및 분석 시작
         </button>
 
         <div id="status" class="text-center space-y-4">
             <div id="loader" class="loader mx-auto hidden"></div>
             <p id="statusMessage" class="text-gray-600"></p>
         </div>
+        
+        <!-- 전체 요약 카드 -->
+        <div id="summaryCard" class="bg-indigo-50 p-6 rounded-lg border border-indigo-200 hidden">
+            <h2 class="text-xl font-semibold text-indigo-800 mb-3">전체 내용 요약</h2>
+            <p id="summaryText" class="text-indigo-700 leading-relaxed"></p>
+        </div>
 
-        <div id="resultCard" class="bg-gray-50 p-6 rounded-lg border border-gray-200 hidden">
-            <h2 class="text-xl font-semibold text-gray-800 mb-4">시간대별 변환 결과</h2>
-            <div id="resultText" class="space-y-2"></div>
+        <!-- 화자별 대화 내용 카드 -->
+        <div id="resultCard" class="bg-white p-6 rounded-lg border border-gray-200 hidden">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">화자별 대화 내용</h2>
+            <div id="resultText" class="space-y-4"></div>
         </div>
 
     </div>
@@ -59,6 +53,8 @@
         const uploadButton = document.getElementById('uploadButton');
         const loader = document.getElementById('loader');
         const statusMessage = document.getElementById('statusMessage');
+        const summaryCard = document.getElementById('summaryCard');
+        const summaryText = document.getElementById('summaryText');
         const resultCard = document.getElementById('resultCard');
         const resultText = document.getElementById('resultText');
 
@@ -97,21 +93,15 @@
             formData.append('file', file);
             try {
                 const response = await fetch('/api/UploadAndTranscribe', { method: 'POST', body: formData });
-                showStatus('파일을 분석하고 텍스트로 변환 중입니다... (최대 5분 소요)', 'info');
+                showStatus('파일을 분석하고 있습니다... (시간이 걸릴 수 있습니다)', 'info');
                 
-                // ★★★ 디버깅 로그 1: 서버 응답 텍스트 확인 ★★★
-                const responseText = await response.text();
-                console.log("--- 서버로부터 받은 원본 응답 ---");
-                console.log(responseText);
-
-                const result = JSON.parse(responseText);
+                const result = await response.json();
 
                 if (!response.ok) {
                     throw new Error(result.error || `서버 오류: ${response.status}`);
                 }
                 displayResult(result);
             } catch (error) {
-                console.error('Error:', error);
                 showStatus(`오류 발생: ${error.message}`, 'error');
             } finally {
                 setLoadingState(false);
@@ -119,52 +109,74 @@
         }
         
         function displayResult(data) {
-            console.log("--- displayResult 함수 시작, 받은 데이터: ---");
-            console.log(data); // ★★★ 디버깅 로그 2: displayResult 함수로 전달된 데이터 확인 ★★★
-
             resultText.innerHTML = ''; 
+            summaryText.textContent = '';
 
+            // 1. 전체 요약 표시
+            if (data.summary) {
+                summaryText.textContent = data.summary;
+                summaryCard.classList.remove('hidden');
+            } else {
+                summaryCard.classList.add('hidden');
+            }
+
+            // 2. 화자별 대화 내용 및 핵심 구절 표시
             const phrases = data?.recognizedPhrases;
-            console.log("--- 추출된 phrases 배열: ---");
-            console.log(phrases); // ★★★ 디버깅 로그 3: phrases 배열 확인 ★★★
-
             if (phrases && phrases.length > 0) {
                 const formatTicks = (ticks) => {
                     const seconds = (ticks || 0) / 10000000;
                     const minutes = Math.floor(seconds / 60);
-                    const remainingSeconds = seconds % 60;
                     const pad = (num) => num.toString().padStart(2, '0');
-                    const milliseconds = Math.round((remainingSeconds - Math.floor(remainingSeconds)) * 1000).toString().padStart(3, '0');
-                    return `${pad(minutes)}:${pad(Math.floor(remainingSeconds))}.${milliseconds}`;
+                    return `${pad(minutes)}:${pad(Math.floor(seconds % 60))}`;
                 };
 
-                phrases.forEach((phrase, index) => {
-                    // ★★★ 디버깅 로그 4: 각 phrase 객체 확인 ★★★
-                    console.log(`--- 처리 중인 phrase #${index}: ---`, phrase);
-
+                phrases.forEach(phrase => {
                     const nBest = phrase.nBest?.[0];
                     if (!nBest) return;
 
-                    const startTime = formatTicks(nBest.offsetInTicks);
-                    const text = nBest.display;
+                    let displayText = nBest.display;
+                    // 핵심 구절에 밑줄 추가
+                    if (phrase.key_phrases && phrase.key_phrases.length > 0) {
+                        phrase.key_phrases.forEach(kp => {
+                            // 정규 표현식을 사용하여 단어 경계를 포함하여 정확히 일치하는 구절만 변경
+                            const regex = new RegExp(`\\b${kp}\\b`, 'g');
+                            displayText = displayText.replace(regex, `<u>${kp}</u>`);
+                        });
+                    }
 
+                    const speakerId = phrase.speaker || 0;
+                    const startTime = formatTicks(nBest.offsetInTicks);
+                    
                     const timelineBlock = document.createElement('div');
-                    timelineBlock.className = 'flex items-start space-x-3 p-2 rounded-md hover:bg-gray-100';
+                    const speakerColors = ['bg-gray-100', 'bg-blue-50', 'bg-green-50', 'bg-yellow-50'];
+                    timelineBlock.className = `flex items-start space-x-4 p-3 rounded-lg ${speakerColors[speakerId % speakerColors.length]}`;
+
+                    const speakerLabel = document.createElement('div');
+                    speakerLabel.className = 'flex-shrink-0 font-bold text-gray-600 w-16 text-center';
+                    speakerLabel.textContent = `화자 ${speakerId}`;
+
+                    const contentBlock = document.createElement('div');
+                    contentBlock.className = 'flex-1';
+                    
                     const timestampEl = document.createElement('div');
-                    timestampEl.className = 'w-24 text-right font-mono text-sm text-blue-600 py-1';
-                    timestampEl.textContent = startTime;
-                    const textEl = document.createElement('div');
-                    textEl.className = 'flex-1 text-gray-800 py-1 border-l-2 border-gray-200 pl-3';
-                    textEl.textContent = text;
-                    timelineBlock.appendChild(timestampEl);
-                    timelineBlock.appendChild(textEl);
+                    timestampEl.className = 'font-mono text-xs text-gray-500 mb-1';
+                    timestampEl.textContent = `시작 시간: ${startTime}`;
+                    
+                    const textEl = document.createElement('p');
+                    textEl.className = 'text-gray-800 leading-relaxed';
+                    textEl.innerHTML = displayText; // innerHTML을 사용하여 <u> 태그 렌더링
+                    
+                    contentBlock.appendChild(timestampEl);
+                    contentBlock.appendChild(textEl);
+                    timelineBlock.appendChild(speakerLabel);
+                    timelineBlock.appendChild(contentBlock);
                     resultText.appendChild(timelineBlock);
                 });
 
                 if (resultText.childElementCount === 0) {
                     showEmptyResultMessage();
                 } else {
-                    showStatus('변환이 완료되었습니다!', 'success');
+                    showStatus('분석이 완료되었습니다!', 'success');
                 }
             } else {
                 showEmptyResultMessage();
@@ -173,22 +185,22 @@
         }
         
         function showEmptyResultMessage() {
-            resultText.innerHTML = `<p class="text-gray-500">오디오 파일에서 인식 가능한 음성을 찾을 수 없습니다.<br><br>- 파일에 소리가 포함되어 있는지 확인해주세요.<br>- 너무 시끄러운 환경의 음성인지 확인해주세요.</p>`;
+            resultText.innerHTML = `<p class="text-gray-500">오디오 파일에서 인식 가능한 음성을 찾을 수 없습니다.</p>`;
             showStatus('분석 완료: 변환할 음성 없음', 'warning');
         }
 
         function setLoadingState(isLoading) {
             uploadButton.disabled = isLoading;
             loader.classList.toggle('hidden', !isLoading);
-            if(isLoading) resultCard.classList.add('hidden');
+            if(isLoading) {
+                summaryCard.classList.add('hidden');
+                resultCard.classList.add('hidden');
+            }
         }
 
         function showStatus(message, type = 'info') {
             statusMessage.textContent = message;
-            const colorClasses = {
-                error: 'text-red-500', success: 'text-green-500',
-                warning: 'text-yellow-600', info: 'text-gray-600'
-            };
+            const colorClasses = { error: 'text-red-500', success: 'text-green-500', warning: 'text-yellow-600', info: 'text-gray-600' };
             statusMessage.className = `transition-colors duration-300 ${colorClasses[type] || colorClasses.info}`;
         }
     </script>

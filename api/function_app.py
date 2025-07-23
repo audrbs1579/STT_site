@@ -1,3 +1,7 @@
+# 파일 이름: function_app.py
+# 설명: STT 완료 후, Azure AI Language 서비스를 호출하여
+# 전체 내용 요약 및 문장별 핵심 구절을 추출하는 기능이 추가되었습니다.
+
 import logging
 import os
 import json
@@ -9,155 +13,138 @@ from datetime import datetime, timedelta
 import azure.functions as func
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
 import requests
-from pydub import AudioSegment  # torchaudio 대신 pydub 사용
-from urllib.parse import quote  # 파일명 인코딩
+from pydub import AudioSegment
 
-# v2 프로그래밍 모델에 따라 FunctionApp 인스턴스를 생성합니다.
-# http_auth_level=func.AuthLevel.ANONYMOUS: 인증 없이 누구나 호출할 수 있도록 설정합니다.
+# Language 서비스를 사용하기 위한 새로운 import
+from azure.core.credentials import AzureKeyCredential
+from azure.ai.textanalytics import TextAnalyticsClient
+
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
 @app.route(route="UploadAndTranscribe", methods=["POST"])
 def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
-    """
-    HTTP POST 요청을 받아 오디오 파일을 업로드하고 텍스트 변환을 수행하는 메인 함수
-    """
     logging.info('Python HTTP trigger function: "UploadAndTranscribe"가 요청을 받았습니다.')
 
+    # --- 환경 변수 로드 (Speech 및 Language 서비스) ---
     try:
-        # 1. 파일 업로드 확인
-        file = req.files.get('file')
-        if not file:
-            logging.warning("업로드된 파일이 없습니다.")
-            return func.HttpResponse(
-                json.dumps({"error": "요청에 파일이 포함되지 않았습니다."}),
-                status_code=400,
-                mimetype="application/json"
-            )
-
-        filename = file.filename
-        file_bytes = file.stream.read()
-        logging.info(f"파일 수신 완료: {filename}, 크기: {len(file_bytes)} bytes")
-
-        # 2. 오디오 변환 (pydub 사용)
-        logging.info("pydub을 사용하여 오디오 변환을 시작합니다...")
-        try:
-            lower_filename = filename.lower()
-            if lower_filename.endswith('.mp3'):
-                audio = AudioSegment.from_mp3(io.BytesIO(file_bytes))
-            elif lower_filename.endswith('.m4a') or lower_filename.endswith('.aac'):
-                audio = AudioSegment.from_file(io.BytesIO(file_bytes), format="m4a")
-            elif lower_filename.endswith('.wav'):
-                audio = AudioSegment.from_wav(io.BytesIO(file_bytes))
-            else:
-                raise ValueError("지원되지 않는 파일 형식입니다. MP3, M4A, AAC, 또는 WAV를 업로드하세요.")
-
-            logging.info("오디오 파일을 성공적으로 로드했습니다.")
-
-            # Azure AI Speech 요구 형식(16kHz, 모노)으로 변환
-            audio = audio.set_frame_rate(16000).set_channels(1)
-            logging.info("오디오를 16kHz, 모노 채널로 변환했습니다.")
-
-            # 변환된 오디오를 WAV 형식으로 메모리 버퍼에 저장
-            wav_buffer = io.BytesIO()
-            audio.export(wav_buffer, format="wav")
-            wav_buffer.seek(0)
-            logging.info("WAV 형식으로 메모리 내 변환을 완료했습니다.")
-
-        except Exception as audio_e:
-            logging.error(f"오디오 변환 중 심각한 오류 발생: {str(audio_e)}")
-            return func.HttpResponse(
-                json.dumps({"error": f"오디오 파일 처리 오류: {str(audio_e)}"}),
-                status_code=400,
-                mimetype="application/json"
-            )
-
-        # 3. Blob Storage에 변환된 WAV 파일 업로드
-        conn_str = os.environ['STORAGE_CONNECTION_STRING']
-        container_name = 'audio-files'
-        
-        blob_service_client = BlobServiceClient.from_connection_string(conn_str)
-        
-        # 원본 파일명으로 저장 (인코딩 처리 + .wav 확장자)
-        safe_blob_name = quote(os.path.splitext(filename)[0]) + ".wav"
-        
-        blob_client = blob_service_client.get_blob_client(container=container_name, blob=safe_blob_name)
-        
-        logging.info(f"'{safe_blob_name}' 이름으로 Blob Storage에 업로드를 시작합니다...")
-        blob_client.upload_blob(wav_buffer, overwrite=True)
-        logging.info("Blob Storage에 업로드 완료.")
-
-        # 4. Speech-to-Text를 위한 SAS URL 생성
-        sas_token = generate_blob_sas(
-            account_name=blob_service_client.account_name,
-            container_name=container_name,
-            blob_name=blob_client.blob_name,
-            account_key=blob_service_client.credential.account_key,
-            permission=BlobSasPermissions(read=True),
-            expiry=datetime.utcnow() + timedelta(hours=1)
-        )
-        sas_url = f"{blob_client.url}?{sas_token}"
-        logging.info("파일 접근을 위한 SAS URL 생성 완료.")
-
-        # 5. Azure AI Speech 배치(Batch) 변환 API 호출
+        # 기존 Speech 서비스 환경 변수
         speech_key = os.environ['SPEECH_KEY']
         speech_region = os.environ['SPEECH_REGION']
-        endpoint = f"https://{speech_region}.api.cognitive.microsoft.com/speechtotext/v3.2/transcriptions"
-
-        headers = {
-            'Ocp-Apim-Subscription-Key': speech_key,
-            'Content-Type': 'application/json'
-        }
-        body = {
-            "contentUrls": [sas_url],
-            "locale": "ko-KR",
-            "displayName": "My Transcription Task",
-            "properties": {
-                "wordLevelTimestampsEnabled": True,
-                "diarizationEnabled": False  # 화자 분리 기능 활성화 (필요 시)
-            }
-        }
-
-        logging.info("Azure AI Speech API에 텍스트 변환 요청을 보냅니다...")
-        response = requests.post(endpoint, headers=headers, json=body)
+        conn_str = os.environ['STORAGE_CONNECTION_STRING']
         
-        if response.status_code != 201:
-            error_msg = response.text
-            logging.error(f"Speech API 요청 실패. 상태 코드: {response.status_code}, 메시지: {error_msg}")
-            return func.HttpResponse(json.dumps({"error": f"Speech API 오류: {error_msg}"}), status_code=500, mimetype="application/json")
+        # ★★★ 새로 추가된 Language 서비스 환경 변수 ★★★
+        language_key = os.environ['LANGUAGE_KEY']
+        language_endpoint = os.environ['LANGUAGE_ENDPOINT']
+
+    except KeyError as e:
+        logging.error(f"환경 변수 설정 오류: {e}를 찾을 수 없습니다. Azure Function 설정을 확인하세요.")
+        return func.HttpResponse(json.dumps({"error": f"설정 오류: {e} 환경 변수가 누락되었습니다."}), status_code=500, mimetype="application/json")
+
+    # --- FFmpeg 설정 ---
+    try:
+        script_dir = os.path.dirname(os.path.abspath(__file__))
+        ffmpeg_path = os.path.join(script_dir, 'bin', 'ffmpeg.exe')
+        ffprobe_path = os.path.join(script_dir, 'bin', 'ffprobe.exe')
+        if not os.path.exists(ffmpeg_path) or not os.path.exists(ffprobe_path):
+            raise FileNotFoundError("api/bin 폴더에 ffmpeg.exe 또는 ffprobe.exe 파일이 없습니다.")
+        AudioSegment.converter = ffmpeg_path
+        AudioSegment.ffprobe = ffprobe_path
+    except Exception as ffmpeg_e:
+        return func.HttpResponse(json.dumps({"error": f"서버 환경 설정 오류 (FFmpeg): {str(ffmpeg_e)}"}), status_code=500, mimetype="application/json")
+
+    # --- 1. 파일 업로드 및 오디오 변환 ---
+    try:
+        file = req.files.get('file')
+        if not file: return func.HttpResponse(json.dumps({"error": "요청에 파일이 포함되지 않았습니다."}), status_code=400, mimetype="application/json")
+        file_bytes = file.stream.read()
+        
+        audio = AudioSegment.from_file(io.BytesIO(file_bytes))
+        audio = audio.set_frame_rate(16000).set_channels(1)
+        wav_buffer = io.BytesIO()
+        audio.export(wav_buffer, format="wav")
+        wav_buffer.seek(0)
+    except Exception as audio_e:
+        return func.HttpResponse(json.dumps({"error": "오디오 파일을 처리할 수 없습니다. 파일이 손상되었거나 지원되지 않는 형식일 수 있습니다."}), status_code=400, mimetype="application/json")
+
+    # --- 2. STT(음성 텍스트 변환) 수행 ---
+    try:
+        blob_service_client = BlobServiceClient.from_connection_string(conn_str)
+        blob_name = f"{str(uuid.uuid4())}.wav"
+        blob_client = blob_service_client.get_blob_client(container='audio-files', blob=blob_name)
+        blob_client.upload_blob(wav_buffer, overwrite=True)
+
+        sas_token = generate_blob_sas(account_name=blob_service_client.account_name, container_name='audio-files', blob_name=blob_name, account_key=blob_service_client.credential.account_key, permission=BlobSasPermissions(read=True), expiry=datetime.utcnow() + timedelta(hours=1))
+        sas_url = f"{blob_client.url}?{sas_token}"
+        
+        stt_endpoint = f"https://{speech_region}.api.cognitive.microsoft.com/speechtotext/v3.2/transcriptions"
+        headers = {'Ocp-Apim-Subscription-Key': speech_key, 'Content-Type': 'application/json'}
+        body = {"contentUrls": [sas_url], "locale": "ko-KR", "displayName": "Summary-Enabled Transcription", "properties": {"wordLevelTimestampsEnabled": True, "diarizationEnabled": True}}
+
+        response = requests.post(stt_endpoint, headers=headers, json=body)
+        if response.status_code != 201: raise Exception(f"Speech API 오류: {response.text}")
         
         transcription_url = response.headers['Location']
-        logging.info(f"텍스트 변환 작업이 생성되었습니다. 상태 확인 URL: {transcription_url}")
+        transcription_result = poll_for_stt_result(transcription_url, headers)
+        if not transcription_result: raise Exception("STT 작업 시간 초과 또는 실패")
 
-        # 6. 변환 결과 폴링(Polling)
-        poll_count = 0
-        while poll_count < 30:  # 최대 5분 (30 * 10초) 동안 확인
-            time.sleep(10)
-            status_res = requests.get(transcription_url, headers=headers)
-            status_data = status_res.json()
-            status = status_data.get('status')
-            logging.info(f"현재 변환 상태: {status}")
+    except Exception as stt_e:
+        logging.error(f"STT 처리 중 오류: {stt_e}", exc_info=True)
+        return func.HttpResponse(json.dumps({"error": str(stt_e)}), status_code=500, mimetype="application/json")
 
-            if status == 'Succeeded':
-                files_url = status_data['links']['files']
-                files_res = requests.get(files_url, headers=headers)
-                content_url = files_res.json()['values'][0]['links']['contentUrl']
-                content_res = requests.get(content_url)
-                transcription_result = content_res.json()
-                
-                logging.info("텍스트 변환 성공!")
-                return func.HttpResponse(json.dumps(transcription_result), status_code=200, mimetype="application/json")
-            
-            elif status == 'Failed':
-                error_info = status_data.get('properties', {}).get('error', {})
-                error_msg = error_info.get('message', '알 수 없는 변환 실패')
-                logging.error(f"텍스트 변환 실패: {error_msg}")
-                return func.HttpResponse(json.dumps({"error": error_msg}), status_code=500, mimetype="application/json")
-            
-            poll_count += 1
+    # --- 3. Language 서비스로 요약 및 핵심 구절 추출 ---
+    try:
+        text_analytics_client = TextAnalyticsClient(endpoint=language_endpoint, credential=AzureKeyCredential(language_key))
         
-        logging.warning("텍스트 변환 작업 시간 초과.")
-        return func.HttpResponse(json.dumps({"error": "Transcription timed out after 5 minutes."}), status_code=500, mimetype="application/json")
+        phrases = transcription_result.get("recognizedPhrases", [])
+        full_text_for_summary = " ".join([p.get("nBest", [{}])[0].get("display", "") for p in phrases])
 
-    except Exception as e:
-        logging.error(f"처리되지 않은 예외 발생: {str(e)}", exc_info=True)
-        return func.HttpResponse(json.dumps({"error": f"서버 내부 오류: {str(e)}"}), status_code=500, mimetype="application/json")
+        # 전체 문서 요약
+        summary = ""
+        if full_text_for_summary.strip():
+            summary_result = text_analytics_client.begin_extract_summary(documents=[full_text_for_summary]).result()
+            for result in summary_result:
+                if not result.is_error:
+                    summary = " ".join([sentence.text for sentence in result.sentences])
+                    break # 첫 번째 문서의 요약만 사용
+        
+        # 각 문장의 핵심 구절 추출
+        for phrase in phrases:
+            display_text = phrase.get("nBest", [{}])[0].get("display", "")
+            if display_text.strip():
+                key_phrases_result = text_analytics_client.extract_key_phrases(documents=[display_text])
+                phrase["key_phrases"] = key_phrases_result[0].key_phrases if not key_phrases_result[0].is_error else []
+            else:
+                phrase["key_phrases"] = []
+
+        # 최종 응답 데이터 구성
+        final_response = {
+            "summary": summary,
+            "recognizedPhrases": phrases
+        }
+        return func.HttpResponse(json.dumps(final_response, ensure_ascii=False), status_code=200, mimetype="application/json; charset=utf-8")
+
+    except Exception as lang_e:
+        logging.error(f"Language 서비스 처리 중 오류: {lang_e}", exc_info=True)
+        # Language 서비스에 문제가 생겨도 STT 결과는 반환하도록 처리
+        return func.HttpResponse(json.dumps(transcription_result, ensure_ascii=False), status_code=200, mimetype="application/json; charset=utf-8")
+
+
+def poll_for_stt_result(url: str, headers: dict) -> dict:
+    """STT 작업이 완료될 때까지 주기적으로 상태를 확인하고 결과를 반환합니다."""
+    poll_count = 0
+    while poll_count < 30:
+        time.sleep(10)
+        res = requests.get(url, headers=headers)
+        data = res.json()
+        status = data.get('status')
+        logging.info(f"현재 변환 상태: {status}")
+        if status == 'Succeeded':
+            files_url = data['links']['files']
+            files_res = requests.get(files_url, headers=headers)
+            content_url = files_res.json()['values'][0]['links']['contentUrl']
+            content_res = requests.get(content_url)
+            return content_res.json()
+        elif status == 'Failed':
+            return None
+        poll_count += 1
+    return None

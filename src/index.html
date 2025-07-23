@@ -146,13 +146,24 @@
         function displayResult(data) {
             // Azure Speech API의 응답 구조에 맞춰 텍스트를 조합합니다.
             if (data && data.recognizedPhrases) {
+                // 화자 분리(diarization)가 활성화된 경우, speaker 정보를 함께 표시합니다.
                 const fullText = data.recognizedPhrases
-                    .map(phrase => phrase.nBest[0].display)
-                    .join('\n'); // 각 문장을 줄바꿈으로 연결
+                    .map(phrase => {
+                        const speakerLabel = phrase.speaker ? `화자 ${phrase.speaker}: ` : '';
+                        const displayText = phrase.nBest && phrase.nBest.length > 0 ? phrase.nBest[0].display : '';
+                        return speakerLabel + displayText;
+                    })
+                    .join('\n');
 
-                resultText.textContent = fullText || "변환된 텍스트가 없습니다.";
+                if (fullText.trim() === '') {
+                    resultText.innerHTML = "오디오 파일에서 인식 가능한 음성을 찾을 수 없습니다.<br><br>- 파일에 소리가 포함되어 있는지 확인해주세요.<br>- 너무 시끄러운 환경의 음성인지 확인해주세요.";
+                    showStatus('분석 완료: 변환할 음성 없음', 'warning');
+                } else {
+                    resultText.textContent = fullText;
+                    showStatus('변환이 완료되었습니다!', 'success');
+                }
                 resultCard.classList.remove('hidden');
-                showStatus('변환이 완료되었습니다!', 'success');
+
             } else {
                 showStatus('결과 형식이 올바르지 않습니다.', 'error');
                 resultText.textContent = JSON.stringify(data, null, 2); // 받은 데이터 그대로 표시
@@ -173,11 +184,13 @@
 
         function showStatus(message, type = 'info') {
             statusMessage.textContent = message;
-            statusMessage.classList.remove('text-red-500', 'text-green-500', 'text-gray-600');
+            statusMessage.classList.remove('text-red-500', 'text-green-500', 'text-yellow-600', 'text-gray-600');
             if (type === 'error') {
                 statusMessage.classList.add('text-red-500');
             } else if (type === 'success') {
                 statusMessage.classList.add('text-green-500');
+            } else if (type === 'warning') {
+                statusMessage.classList.add('text-yellow-600'); // 경고 메시지를 위한 노란색
             } else {
                 statusMessage.classList.add('text-gray-600');
             }

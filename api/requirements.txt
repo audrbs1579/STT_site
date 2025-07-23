@@ -5,5 +5,4 @@
 azure-functions
 azure-storage-blob
 requests
-torch 
-torchaudio
+pydub

@@ -22,13 +22,13 @@
         }
     </style>
 </head>
-<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+<body class="bg-gray-100 flex items-center justify-center min-h-screen py-12">
     <div class="w-full max-w-2xl mx-auto bg-white rounded-2xl shadow-xl p-8 space-y-6">
         
         <!-- 헤더 -->
         <div class="text-center">
             <h1 class="text-3xl font-bold text-gray-800">AI 음성 텍스트 변환기</h1>
-            <p class="text-gray-500 mt-2">오디오 파일을 업로드하여 텍스트로 변환하세요.</p>
+            <p class="text-gray-500 mt-2">오디오 파일을 업로드하여 시간대별 텍스트로 변환하세요.</p>
         </div>
 
         <!-- 파일 업로드 영역 -->
@@ -45,16 +45,16 @@
 
         <!-- 상태 및 결과 표시 영역 -->
         <div id="status" class="text-center space-y-4">
-            <!-- 로딩 스피너 (초기에는 숨김) -->
             <div id="loader" class="loader mx-auto hidden"></div>
-            <!-- 상태 메시지 -->
             <p id="statusMessage" class="text-gray-600"></p>
         </div>
 
         <!-- 변환 결과 카드 -->
         <div id="resultCard" class="bg-gray-50 p-6 rounded-lg border border-gray-200 hidden">
-            <h2 class="text-xl font-semibold text-gray-800 mb-4">변환 결과</h2>
-            <div id="resultText" class="text-gray-700 whitespace-pre-wrap leading-relaxed"></div>
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">시간대별 변환 결과</h2>
+            <div id="resultText" class="space-y-2">
+                <!-- 타임스탬프와 텍스트가 여기에 동적으로 추가됩니다. -->
+            </div>
         </div>
 
     </div>
@@ -69,17 +69,9 @@
         const resultCard = document.getElementById('resultCard');
         const resultText = document.getElementById('resultText');
 
-        // 파일 선택 영역 클릭 시 실제 파일 입력창 열기
         dropZone.addEventListener('click', () => audioFile.click());
-
-        // 드래그 앤 드롭 이벤트 처리
-        dropZone.addEventListener('dragover', (e) => {
-            e.preventDefault();
-            dropZone.classList.add('border-blue-500', 'bg-blue-50');
-        });
-        dropZone.addEventListener('dragleave', () => {
-            dropZone.classList.remove('border-blue-500', 'bg-blue-50');
-        });
+        dropZone.addEventListener('dragover', (e) => { e.preventDefault(); dropZone.classList.add('border-blue-500', 'bg-blue-50'); });
+        dropZone.addEventListener('dragleave', () => dropZone.classList.remove('border-blue-500', 'bg-blue-50'));
         dropZone.addEventListener('drop', (e) => {
             e.preventDefault();
             dropZone.classList.remove('border-blue-500', 'bg-blue-50');
@@ -88,8 +80,6 @@
                 updateDropZoneText();
             }
         });
-
-        // 파일 선택 시 텍스트 업데이트
         audioFile.addEventListener('change', updateDropZoneText);
 
         function updateDropZoneText() {
@@ -108,92 +98,101 @@
                 showStatus('파일을 먼저 선택해주세요.', 'error');
                 return;
             }
-
-            // UI 초기화 및 로딩 상태 설정
             setLoadingState(true);
             showStatus('파일을 업로드하고 있습니다...', 'info');
-
             const formData = new FormData();
             formData.append('file', file);
-
             try {
-                const response = await fetch('/api/UploadAndTranscribe', {
-                    method: 'POST',
-                    body: formData
-                });
-
+                const response = await fetch('/api/UploadAndTranscribe', { method: 'POST', body: formData });
                 showStatus('파일을 분석하고 텍스트로 변환 중입니다... (최대 5분 소요)', 'info');
-
                 const result = await response.json();
-
                 if (!response.ok) {
-                    // API가 반환한 에러 메시지 표시
                     throw new Error(result.error || `서버 오류: ${response.status}`);
                 }
-                
-                // 성공적으로 변환된 텍스트를 화면에 표시
                 displayResult(result);
-
             } catch (error) {
                 console.error('Error:', error);
                 showStatus(`오류 발생: ${error.message}`, 'error');
             } finally {
-                // 로딩 상태 해제
                 setLoadingState(false);
             }
         }
 
+        /**
+         * API 응답을 받아 시간대별 텍스트 UI를 생성합니다.
+         * @param {object} data - Azure AI Speech API의 JSON 응답 객체
+         */
         function displayResult(data) {
-            // Azure Speech API의 응답 구조에 맞춰 텍스트를 조합합니다.
-            if (data && data.recognizedPhrases) {
-                // 화자 분리(diarization)가 활성화된 경우, speaker 정보를 함께 표시합니다.
-                const fullText = data.recognizedPhrases
-                    .map(phrase => {
-                        const speakerLabel = phrase.speaker ? `화자 ${phrase.speaker}: ` : '';
-                        const displayText = phrase.nBest && phrase.nBest.length > 0 ? phrase.nBest[0].display : '';
-                        return speakerLabel + displayText;
-                    })
-                    .join('\n');
+            resultText.innerHTML = ''; // 이전 결과 초기화
 
-                if (fullText.trim() === '') {
-                    resultText.innerHTML = "오디오 파일에서 인식 가능한 음성을 찾을 수 없습니다.<br><br>- 파일에 소리가 포함되어 있는지 확인해주세요.<br>- 너무 시끄러운 환경의 음성인지 확인해주세요.";
-                    showStatus('분석 완료: 변환할 음성 없음', 'warning');
+            const phrases = data?.recognizedPhrases;
+
+            if (phrases && phrases.length > 0) {
+                // 타임스탬프(tick)를 '분:초.밀리초' 형식으로 변환하는 함수
+                const formatTicks = (ticks) => {
+                    const seconds = (ticks || 0) / 10000000;
+                    const minutes = Math.floor(seconds / 60);
+                    const remainingSeconds = seconds % 60;
+                    const pad = (num) => num.toString().padStart(2, '0');
+                    const milliseconds = Math.round((remainingSeconds - Math.floor(remainingSeconds)) * 1000).toString().padStart(3, '0');
+                    return `${pad(minutes)}:${pad(Math.floor(remainingSeconds))}.${milliseconds}`;
+                };
+
+                phrases.forEach(phrase => {
+                    const nBest = phrase.nBest?.[0];
+                    if (!nBest) return;
+
+                    const startTime = formatTicks(nBest.offsetInTicks);
+                    const text = nBest.display;
+
+                    // 각 텍스트 라인을 위한 UI 요소 생성
+                    const timelineBlock = document.createElement('div');
+                    timelineBlock.className = 'flex items-start space-x-3 p-2 rounded-md hover:bg-gray-100';
+
+                    const timestampEl = document.createElement('div');
+                    timestampEl.className = 'w-24 text-right font-mono text-sm text-blue-600 py-1';
+                    timestampEl.textContent = startTime;
+
+                    const textEl = document.createElement('div');
+                    textEl.className = 'flex-1 text-gray-800 py-1 border-l-2 border-gray-200 pl-3';
+                    textEl.textContent = text;
+
+                    timelineBlock.appendChild(timestampEl);
+                    timelineBlock.appendChild(textEl);
+                    resultText.appendChild(timelineBlock);
+                });
+
+                if (resultText.childElementCount === 0) {
+                    showEmptyResultMessage();
                 } else {
-                    resultText.textContent = fullText;
                     showStatus('변환이 완료되었습니다!', 'success');
                 }
-                resultCard.classList.remove('hidden');
-
             } else {
-                showStatus('결과 형식이 올바르지 않습니다.', 'error');
-                resultText.textContent = JSON.stringify(data, null, 2); // 받은 데이터 그대로 표시
-                resultCard.classList.remove('hidden');
+                showEmptyResultMessage();
             }
+            resultCard.classList.remove('hidden');
+        }
+        
+        function showEmptyResultMessage() {
+            resultText.innerHTML = `<p class="text-gray-500">오디오 파일에서 인식 가능한 음성을 찾을 수 없습니다.<br><br>- 파일에 소리가 포함되어 있는지 확인해주세요.<br>- 너무 시끄러운 환경의 음성인지 확인해주세요.</p>`;
+            showStatus('분석 완료: 변환할 음성 없음', 'warning');
         }
 
         function setLoadingState(isLoading) {
-            if (isLoading) {
-                uploadButton.disabled = true;
-                loader.classList.remove('hidden');
-                resultCard.classList.add('hidden');
-            } else {
-                uploadButton.disabled = false;
-                loader.classList.add('hidden');
-            }
+            uploadButton.disabled = isLoading;
+            loader.classList.toggle('hidden', !isLoading);
+            resultCard.classList.toggle('hidden', true);
         }
 
         function showStatus(message, type = 'info') {
             statusMessage.textContent = message;
-            statusMessage.classList.remove('text-red-500', 'text-green-500', 'text-yellow-600', 'text-gray-600');
-            if (type === 'error') {
-                statusMessage.classList.add('text-red-500');
-            } else if (type === 'success') {
-                statusMessage.classList.add('text-green-500');
-            } else if (type === 'warning') {
-                statusMessage.classList.add('text-yellow-600'); // 경고 메시지를 위한 노란색
-            } else {
-                statusMessage.classList.add('text-gray-600');
-            }
+            const colorClasses = {
+                error: 'text-red-500',
+                success: 'text-green-500',
+                warning: 'text-yellow-600',
+                info: 'text-gray-600'
+            };
+            statusMessage.className = `transition-colors duration-300 ${colorClasses[type] || colorClasses.info}`;
         }
     </script>
 </body>

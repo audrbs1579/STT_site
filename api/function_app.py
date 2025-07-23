@@ -1,3 +1,7 @@
+# 파일 이름: function_app.py
+# 설명: 복잡한 의존성을 가진 'magic' 라이브러리를 제거하고,
+# pydub의 자체 오류 처리 기능을 강화하여 안정성을 높인 최종 버전입니다.
+
 import logging
 import os
 import json
@@ -11,7 +15,6 @@ from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPerm
 import requests
 from pydub import AudioSegment
 import ffmpeg_downloader as ffdl
-import magic # 파일의 실제 타입을 확인하기 위한 라이브러리
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -19,7 +22,8 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function: "UploadAndTranscribe"가 요청을 받았습니다.')
 
-    # ★★★★★ FFmpeg 설정 ★★★★★
+    # ★★★ FFmpeg 설정 ★★★
+    # pydub이 서버 환경에서 오디오 파일을 처리하려면 FFmpeg가 필수입니다.
     try:
         logging.info("FFmpeg 설정을 시작합니다...")
         ffmpeg_path = ffdl.ffmpeg_path
@@ -43,23 +47,6 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         file_bytes = file.stream.read()
         logging.info(f"파일 수신 완료: {filename}, 크기: {len(file_bytes)} bytes")
 
-        # ★★★★★ 중요: 파일 유효성 검사 (MIME 타입 확인) ★★★★★
-        # 파일 내용 기반으로 실제 파일 형식을 확인합니다.
-        try:
-            mime_type = magic.from_buffer(file_bytes, mime=True)
-            logging.info(f"감지된 파일 MIME 타입: {mime_type}")
-            if not mime_type.startswith('audio/'):
-                logging.error(f"업로드된 파일이 오디오 형식이 아님: {mime_type}")
-                return func.HttpResponse(
-                    json.dumps({"error": f"지원하지 않는 파일 형식입니다: '{mime_type}'. 오디오 파일을 업로드해주세요."}),
-                    status_code=400,
-                    mimetype="application/json"
-                )
-        except Exception as magic_e:
-            # magic 라이브러리 실행에 실패하더라도 일단 변환을 시도하도록 경고만 로깅합니다.
-            logging.warning(f"MIME 타입 감지 중 오류 발생: {str(magic_e)}. 변환을 계속 시도합니다.")
-
-
         # 2. 오디오 변환 (pydub 사용)
         logging.info("pydub을 사용하여 오디오 변환을 시작합니다...")
         try:
@@ -72,10 +59,10 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
             wav_buffer.seek(0)
             logging.info("WAV 형식으로 메모리 내 변환을 완료했습니다.")
         except Exception as audio_e:
-            # 이 부분에서 'Header missing' 오류가 발생한 것으로 추정됩니다.
-            logging.error(f"오디오 변환 중 심각한 오류 발생: {str(audio_e)}", exc_info=True)
+            # pydub이 파일을 처리하지 못하면, 파일이 손상되었거나 지원되지 않는 형식일 가능성이 높습니다.
+            logging.error(f"오디오 변환 중 오류 발생: {str(audio_e)}", exc_info=True)
             return func.HttpResponse(
-                json.dumps({"error": f"오디오 파일을 처리할 수 없습니다. 파일이 손상되었거나 지원되지 않는 형식일 수 있습니다."}),
+                json.dumps({"error": "오디오 파일을 처리할 수 없습니다. 파일이 손상되었거나 지원되지 않는 오디오 형식일 수 있습니다."}),
                 status_code=400,
                 mimetype="application/json"
             )

@@ -1,9 +1,5 @@
-# 파일 이름: requirements.txt
-
 azure-functions
 requests
 azure-storage-blob
 pydub
 ffmpeg-downloader
-python-magic
-libmagic

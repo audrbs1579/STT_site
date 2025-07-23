@@ -7,8 +7,9 @@ import time
 import json
 from datetime import datetime, timedelta
 import uuid
-import io
+import tempfile
 import torchaudio  # MP3 to WAV 변환
+import os  # cleanup
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -21,16 +22,26 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
             return func.HttpResponse(json.dumps({"error": "No file uploaded."}), status_code=400, mimetype="application/json")
 
         # 파일 메모리에 로드
-        audio_data = io.BytesIO(file.stream.read())
+        audio_data = file.stream.read()
+
+        # 임시 파일로 저장 (MP3 BytesIO 문제 방지)
+        with tempfile.NamedTemporaryFile(suffix='.mp3', delete=False) as temp_file:
+            temp_file.write(audio_data)
+            temp_path = temp_file.name
+
+        logging.info(f"Temporary file created: {temp_path}")
 
         # torchaudio로 로드 및 WAV 변환 (mono, 16kHz)
-        waveform, sample_rate = torchaudio.load(audio_data)
+        waveform, sample_rate = torchaudio.load(temp_path)
         waveform = torchaudio.transforms.Resample(sample_rate, 16000)(waveform)
         if waveform.size(0) > 1:  # stereo to mono
             waveform = waveform.mean(dim=0, keepdim=True)
         wav_buffer = io.BytesIO()
         torchaudio.save(wav_buffer, waveform, 16000, format="WAV")
         wav_buffer.seek(0)
+
+        # 임시 파일 삭제
+        os.unlink(temp_path)
 
         conn_str = os.environ['STORAGE_CONNECTION_STRING']
         blob_service = BlobServiceClient.from_connection_string(conn_str)

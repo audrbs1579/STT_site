@@ -5,4 +5,5 @@
 azure-functions
 azure-storage-blob
 requests
-torch torchaudio
+torch 
+torchaudio

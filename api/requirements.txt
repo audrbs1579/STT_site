@@ -6,3 +6,4 @@ azure-storage-blob
 pydub
 ffmpeg-downloader
 python-magic
+libmagic

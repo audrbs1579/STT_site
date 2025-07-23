@@ -6,7 +6,9 @@ import os
 import time
 import json
 from datetime import datetime, timedelta
-import uuid  # UUID for filename
+import uuid
+import io
+import torchaudio  # MP3 to WAV 변환
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -18,20 +20,29 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         if not file:
             return func.HttpResponse(json.dumps({"error": "No file uploaded."}), status_code=400, mimetype="application/json")
 
+        # 파일 메모리에 로드
+        audio_data = io.BytesIO(file.stream.read())
+
+        # torchaudio로 로드 및 WAV 변환 (mono, 16kHz)
+        waveform, sample_rate = torchaudio.load(audio_data)
+        waveform = torchaudio.transforms.Resample(sample_rate, 16000)(waveform)
+        if waveform.size(0) > 1:  # stereo to mono
+            waveform = waveform.mean(dim=0, keepdim=True)
+        wav_buffer = io.BytesIO()
+        torchaudio.save(wav_buffer, waveform, 16000, format="WAV")
+        wav_buffer.seek(0)
+
         conn_str = os.environ['STORAGE_CONNECTION_STRING']
         blob_service = BlobServiceClient.from_connection_string(conn_str)
         container_client = blob_service.get_container_client('audio-files')
         if not container_client.exists():
             container_client.create_container()
 
-        # UUID로 filename 재명명 (인코딩 문제 방지, 원본 확장자 유지)
-        original_ext = os.path.splitext(file.filename)[1]  # .mp3 등
-        safe_filename = str(uuid.uuid4()) + original_ext
+        safe_filename = str(uuid.uuid4()) + ".wav"  # WAV로 업로드
         blob_client = container_client.get_blob_client(safe_filename)
-        logging.info(f"Uploading file as: {safe_filename}")
-        blob_client.upload_blob(file.stream.read(), overwrite=True)
+        logging.info(f"Uploading converted file: {safe_filename}")
+        blob_client.upload_blob(wav_buffer, overwrite=True)
 
-        # SAS 토큰 생성
         sas_token = generate_blob_sas(
             account_name=blob_service.account_name,
             container_name=container_client.container_name,

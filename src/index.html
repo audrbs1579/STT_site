@@ -1,0 +1,31 @@
+<!DOCTYPE html>
+<html lang="ko">
+<head>
+    <meta charset="UTF-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1.0">
+    <title>MP3 to Text Converter</title>
+    <style> body { font-family: Arial; text-align: center; margin: 50px; } #result { margin-top: 20px; } </style>
+</head>
+<body>
+    <h1>MP3 파일을 텍스트로 변환하세요</h1>
+    <input type="file" id="mp3File" accept=".mp3">
+    <button onclick="uploadFile()">업로드 및 변환</button>
+    <div id="result">결과가 여기에 표시됩니다...</div>
+
+    <script>
+        async function uploadFile() {
+            const file = document.getElementById('mp3File').files[0];
+            if (!file) { alert('파일을 선택하세요!'); return; }
+            const formData = new FormData();
+            formData.append('file', file);
+            try {
+                const response = await fetch('/api/UploadAndTranscribe', { method: 'POST', body: formData });
+                const result = await response.json();
+                document.getElementById('result').innerText = result.transcription || '오류: ' + result.error;
+            } catch (error) {
+                document.getElementById('result').innerText = '업로드 실패: ' + error.message;
+            }
+        }
+    </script>
+</body>
+</html>

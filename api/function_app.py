@@ -1,6 +1,5 @@
 # 파일 이름: function_app.py
-# 설명: 복잡한 의존성을 가진 'magic' 라이브러리를 제거하고,
-# pydub의 자체 오류 처리 기능을 강화하여 안정성을 높인 최종 버전입니다.
+# 설명: FFmpeg 경로 유효성 검사를 추가하여 안정성을 극대화한 최종 버전입니다.
 
 import logging
 import os
@@ -22,13 +21,31 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function: "UploadAndTranscribe"가 요청을 받았습니다.')
 
-    # ★★★ FFmpeg 설정 ★★★
-    # pydub이 서버 환경에서 오디오 파일을 처리하려면 FFmpeg가 필수입니다.
+    # ★★★★★ 중요: FFmpeg 경로 검증 및 설정 ★★★★★
     try:
         logging.info("FFmpeg 설정을 시작합니다...")
         ffmpeg_path = ffdl.ffmpeg_path
+        ffprobe_path = ffdl.ffprobe_path
+
+        # 1. 경로 변수가 None이 아닌지 확인
+        if not ffmpeg_path or not ffprobe_path:
+            raise FileNotFoundError("ffmpeg-downloader가 FFmpeg 또는 ffprobe 경로를 반환하지 못했습니다.")
+
+        # 2. 해당 경로에 실제 파일이 존재하는지 확인
+        if not os.path.exists(ffmpeg_path):
+            raise FileNotFoundError(f"지정된 경로에 FFmpeg 실행 파일이 없습니다: {ffmpeg_path}")
+        if not os.path.exists(ffprobe_path):
+            raise FileNotFoundError(f"지정된 경로에 ffprobe 실행 파일이 없습니다: {ffprobe_path}")
+            
+        logging.info(f"FFmpeg 경로 확인: {ffmpeg_path}")
+        logging.info(f"ffprobe 경로 확인: {ffprobe_path}")
+
+        # pydub에 FFmpeg 및 ffprobe 경로를 명시적으로 지정
         AudioSegment.converter = ffmpeg_path
-        logging.info("pydub 라이브러리에 FFmpeg 경로를 성공적으로 설정했습니다.")
+        AudioSegment.ffprobe = ffprobe_path
+        
+        logging.info("pydub 라이브러리에 FFmpeg 및 ffprobe 경로를 성공적으로 설정했습니다.")
+
     except Exception as ffmpeg_e:
         logging.error(f"FFmpeg 설정 중 심각한 오류 발생: {str(ffmpeg_e)}", exc_info=True)
         return func.HttpResponse(
@@ -59,7 +76,6 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
             wav_buffer.seek(0)
             logging.info("WAV 형식으로 메모리 내 변환을 완료했습니다.")
         except Exception as audio_e:
-            # pydub이 파일을 처리하지 못하면, 파일이 손상되었거나 지원되지 않는 형식일 가능성이 높습니다.
             logging.error(f"오디오 변환 중 오류 발생: {str(audio_e)}", exc_info=True)
             return func.HttpResponse(
                 json.dumps({"error": "오디오 파일을 처리할 수 없습니다. 파일이 손상되었거나 지원되지 않는 오디오 형식일 수 있습니다."}),
@@ -90,7 +106,7 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         sas_url = f"{blob_client.url}?{sas_token}"
         
         speech_key = os.environ['SPEECH_KEY']
-        speech_region = os.environ['SPEECH_REGION']
+        speech_region = os.environ['SPECH_REGION']
         endpoint = f"https://{speech_region}.api.cognitive.microsoft.com/speechtotext/v3.2/transcriptions"
 
         headers = {'Ocp-Apim-Subscription-Key': speech_key, 'Content-Type': 'application/json'}

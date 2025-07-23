@@ -3,27 +3,183 @@
 <head>
     <meta charset="UTF-8">
     <meta name="viewport" content="width=device-width, initial-scale=1.0">
-    <title>MP3 to Text Converter</title>
-    <style> body { font-family: Arial; text-align: center; margin: 50px; } #result { margin-top: 20px; } </style>
+    <title>AI 음성 텍스트 변환기</title>
+    <!-- Tailwind CSS CDN 추가 -->
+    <script src="https://cdn.tailwindcss.com"></script>
+    <style>
+        /* 로딩 스피너를 위한 CSS */
+        .loader {
+            border: 4px solid #f3f3f3;
+            border-radius: 50%;
+            border-top: 4px solid #3498db;
+            width: 40px;
+            height: 40px;
+            animation: spin 2s linear infinite;
+        }
+        @keyframes spin {
+            0% { transform: rotate(0deg); }
+            100% { transform: rotate(360deg); }
+        }
+    </style>
 </head>
-<body>
-    <h1>MP3 파일을 텍스트로 변환하세요</h1>
-    <input type="file" id="mp3File" accept=".mp3">
-    <button onclick="uploadFile()">업로드 및 변환</button>
-    <div id="result">결과가 여기에 표시됩니다...</div>
+<body class="bg-gray-100 flex items-center justify-center min-h-screen">
+    <div class="w-full max-w-2xl mx-auto bg-white rounded-2xl shadow-xl p-8 space-y-6">
+        
+        <!-- 헤더 -->
+        <div class="text-center">
+            <h1 class="text-3xl font-bold text-gray-800">AI 음성 텍스트 변환기</h1>
+            <p class="text-gray-500 mt-2">오디오 파일을 업로드하여 텍스트로 변환하세요.</p>
+        </div>
+
+        <!-- 파일 업로드 영역 -->
+        <div class="border-2 border-dashed border-gray-300 rounded-lg p-8 text-center cursor-pointer hover:border-blue-500 transition-colors" id="dropZone">
+            <input type="file" id="audioFile" accept="audio/*" class="hidden">
+            <p class="text-gray-500" id="dropZoneText">여기에 파일을 드래그하거나 클릭하여 선택하세요.</p>
+            <p class="text-sm text-gray-400 mt-2">지원 형식: MP3, WAV, M4A 등</p>
+        </div>
+
+        <!-- 업로드 버튼 -->
+        <button onclick="uploadFile()" id="uploadButton" class="w-full bg-blue-600 text-white font-bold py-3 px-4 rounded-lg hover:bg-blue-700 transition-all duration-300 disabled:bg-gray-400">
+            업로드 및 변환 시작
+        </button>
+
+        <!-- 상태 및 결과 표시 영역 -->
+        <div id="status" class="text-center space-y-4">
+            <!-- 로딩 스피너 (초기에는 숨김) -->
+            <div id="loader" class="loader mx-auto hidden"></div>
+            <!-- 상태 메시지 -->
+            <p id="statusMessage" class="text-gray-600"></p>
+        </div>
+
+        <!-- 변환 결과 카드 -->
+        <div id="resultCard" class="bg-gray-50 p-6 rounded-lg border border-gray-200 hidden">
+            <h2 class="text-xl font-semibold text-gray-800 mb-4">변환 결과</h2>
+            <div id="resultText" class="text-gray-700 whitespace-pre-wrap leading-relaxed"></div>
+        </div>
+
+    </div>
 
     <script>
+        const dropZone = document.getElementById('dropZone');
+        const audioFile = document.getElementById('audioFile');
+        const dropZoneText = document.getElementById('dropZoneText');
+        const uploadButton = document.getElementById('uploadButton');
+        const loader = document.getElementById('loader');
+        const statusMessage = document.getElementById('statusMessage');
+        const resultCard = document.getElementById('resultCard');
+        const resultText = document.getElementById('resultText');
+
+        // 파일 선택 영역 클릭 시 실제 파일 입력창 열기
+        dropZone.addEventListener('click', () => audioFile.click());
+
+        // 드래그 앤 드롭 이벤트 처리
+        dropZone.addEventListener('dragover', (e) => {
+            e.preventDefault();
+            dropZone.classList.add('border-blue-500', 'bg-blue-50');
+        });
+        dropZone.addEventListener('dragleave', () => {
+            dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+        });
+        dropZone.addEventListener('drop', (e) => {
+            e.preventDefault();
+            dropZone.classList.remove('border-blue-500', 'bg-blue-50');
+            if (e.dataTransfer.files.length) {
+                audioFile.files = e.dataTransfer.files;
+                updateDropZoneText();
+            }
+        });
+
+        // 파일 선택 시 텍스트 업데이트
+        audioFile.addEventListener('change', updateDropZoneText);
+
+        function updateDropZoneText() {
+            if (audioFile.files.length > 0) {
+                dropZoneText.textContent = `선택된 파일: ${audioFile.files[0].name}`;
+                dropZone.classList.add('border-green-500');
+            } else {
+                dropZoneText.textContent = '여기에 파일을 드래그하거나 클릭하여 선택하세요.';
+                dropZone.classList.remove('border-green-500');
+            }
+        }
+
         async function uploadFile() {
-            const file = document.getElementById('mp3File').files[0];
-            if (!file) { alert('파일을 선택하세요!'); return; }
+            const file = audioFile.files[0];
+            if (!file) {
+                showStatus('파일을 먼저 선택해주세요.', 'error');
+                return;
+            }
+
+            // UI 초기화 및 로딩 상태 설정
+            setLoadingState(true);
+            showStatus('파일을 업로드하고 있습니다...', 'info');
+
             const formData = new FormData();
             formData.append('file', file);
+
             try {
-                const response = await fetch('/api/UploadAndTranscribe', { method: 'POST', body: formData });
+                const response = await fetch('/api/UploadAndTranscribe', {
+                    method: 'POST',
+                    body: formData
+                });
+
+                showStatus('파일을 분석하고 텍스트로 변환 중입니다... (최대 5분 소요)', 'info');
+
                 const result = await response.json();
-                document.getElementById('result').innerText = result.transcription || '오류: ' + result.error;
+
+                if (!response.ok) {
+                    // API가 반환한 에러 메시지 표시
+                    throw new Error(result.error || `서버 오류: ${response.status}`);
+                }
+                
+                // 성공적으로 변환된 텍스트를 화면에 표시
+                displayResult(result);
+
             } catch (error) {
-                document.getElementById('result').innerText = '업로드 실패: ' + error.message;
+                console.error('Error:', error);
+                showStatus(`오류 발생: ${error.message}`, 'error');
+            } finally {
+                // 로딩 상태 해제
+                setLoadingState(false);
+            }
+        }
+
+        function displayResult(data) {
+            // Azure Speech API의 응답 구조에 맞춰 텍스트를 조합합니다.
+            if (data && data.recognizedPhrases) {
+                const fullText = data.recognizedPhrases
+                    .map(phrase => phrase.nBest[0].display)
+                    .join('\n'); // 각 문장을 줄바꿈으로 연결
+
+                resultText.textContent = fullText || "변환된 텍스트가 없습니다.";
+                resultCard.classList.remove('hidden');
+                showStatus('변환이 완료되었습니다!', 'success');
+            } else {
+                showStatus('결과 형식이 올바르지 않습니다.', 'error');
+                resultText.textContent = JSON.stringify(data, null, 2); // 받은 데이터 그대로 표시
+                resultCard.classList.remove('hidden');
+            }
+        }
+
+        function setLoadingState(isLoading) {
+            if (isLoading) {
+                uploadButton.disabled = true;
+                loader.classList.remove('hidden');
+                resultCard.classList.add('hidden');
+            } else {
+                uploadButton.disabled = false;
+                loader.classList.add('hidden');
+            }
+        }
+
+        function showStatus(message, type = 'info') {
+            statusMessage.textContent = message;
+            statusMessage.classList.remove('text-red-500', 'text-green-500', 'text-gray-600');
+            if (type === 'error') {
+                statusMessage.classList.add('text-red-500');
+            } else if (type === 'success') {
+                statusMessage.classList.add('text-green-500');
+            } else {
+                statusMessage.classList.add('text-gray-600');
             }
         }
     </script>

@@ -6,3 +6,4 @@ azure-functions
 azure-storage-blob
 requests
 pydub
+ffmpeg-downloader

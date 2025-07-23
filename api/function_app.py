@@ -2,7 +2,7 @@
 # 설명: 사용자가 업로드한 오디오 파일(MP3 등)을 WAV 형식으로 변환하고,
 # Azure Blob Storage에 업로드한 뒤, Azure AI Speech 서비스를 통해
 # 텍스트로 변환하는 전체 과정을 처리하는 Azure Function 코드입니다.
-# torchaudio 대신 pydub을 사용하여 안정성을 높였습니다.
+# pydub과 ffmpeg-downloader를 사용하여 안정성을 높였습니다.
 
 import logging
 import os
@@ -15,7 +15,8 @@ from datetime import datetime, timedelta
 import azure.functions as func
 from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
 import requests
-from pydub import AudioSegment # torchaudio 대신 pydub 사용
+from pydub import AudioSegment # 오디오 처리를 위한 라이브러리
+import ffmpeg_downloader as ffdl # pydub의 의존성인 FFmpeg를 다운로드하는 라이브러리
 
 # v2 프로그래밍 모델에 따라 FunctionApp 인스턴스를 생성합니다.
 # http_auth_level=func.AuthLevel.ANONYMOUS: 인증 없이 누구나 호출할 수 있도록 설정합니다.
@@ -27,6 +28,26 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
     HTTP POST 요청을 받아 오디오 파일을 업로드하고 텍스트 변환을 수행하는 메인 함수
     """
     logging.info('Python HTTP trigger function: "UploadAndTranscribe"가 요청을 받았습니다.')
+
+    # ★★★★★ 중요: FFmpeg 설정 ★★★★★
+    # pydub이 서버 환경(Azure) 또는 로컬 환경에서 오디오 파일을 처리하려면 FFmpeg가 필수입니다.
+    # 이 코드는 함수 실행 시 FFmpeg가 없으면 자동으로 다운로드하고 경로를 설정합니다.
+    try:
+        logging.info("FFmpeg 설정을 시작합니다...")
+        # ffmpeg_downloader 라이브러리가 FFmpeg 실행 파일의 경로를 반환합니다.
+        # 로컬에 해당 파일이 없으면 이 시점에 자동으로 다운로드됩니다.
+        ffmpeg_path = ffdl.ffmpeg_path
+        logging.info(f"FFmpeg 실행 파일 경로: {ffmpeg_path}")
+        # pydub에 FFmpeg 경로를 명시적으로 지정합니다.
+        AudioSegment.converter = ffmpeg_path
+        logging.info("pydub 라이브러리에 FFmpeg 경로를 성공적으로 설정했습니다.")
+    except Exception as ffmpeg_e:
+        logging.error(f"FFmpeg 설정 중 심각한 오류 발생: {str(ffmpeg_e)}", exc_info=True)
+        return func.HttpResponse(
+            json.dumps({"error": f"서버 환경 설정 오류 (FFmpeg): {str(ffmpeg_e)}"}),
+            status_code=500,
+            mimetype="application/json"
+        )
 
     try:
         # 1. 파일 업로드 확인
@@ -63,7 +84,7 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
             logging.info("WAV 형식으로 메모리 내 변환을 완료했습니다.")
 
         except Exception as audio_e:
-            logging.error(f"오디오 변환 중 심각한 오류 발생: {str(audio_e)}")
+            logging.error(f"오디오 변환 중 심각한 오류 발생: {str(audio_e)}", exc_info=True)
             return func.HttpResponse(
                 json.dumps({"error": f"오디오 파일 처리 오류: {str(audio_e)}"}),
                 status_code=400,
@@ -145,8 +166,6 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
                 transcription_result = content_res.json()
                 
                 logging.info("텍스트 변환 성공!")
-                # 전체 텍스트만 추출하고 싶을 경우
-                # full_text = " ".join([item['display'] for item in transcription_result['recognizedPhrases']])
                 
                 return func.HttpResponse(json.dumps(transcription_result), status_code=200, mimetype="application/json")
             
@@ -165,4 +184,3 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         # 예상치 못한 모든 오류를 여기서 처리합니다.
         logging.error(f"처리되지 않은 예외 발생: {str(e)}", exc_info=True)
         return func.HttpResponse(json.dumps({"error": f"서버 내부 오류: {str(e)}"}), status_code=500, mimetype="application/json")
-

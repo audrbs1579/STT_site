@@ -26,11 +26,11 @@ jobs:
           azure_static_web_apps_api_token: ${{ secrets.AZURE_STATIC_WEB_APPS_API_TOKEN_ORANGE_HILL_01E576900 }}
           repo_token: ${{ secrets.GITHUB_TOKEN }} # Used for Github integrations (i.e. PR comments)
           action: "upload"
-          ###### Repository/Build Configurations - These values can be configured to match your app requirements. ######
-          # For more information regarding Static Web App workflow configurations, please visit: https://aka.ms/swaworkflowconfig
-          app_location: "/" # App source code path
-          api_location: "" # Api source code path - optional
-          output_location: "" # Built app content directory - optional
+          ###### Repository/Build Configurations ######
+          app_location: "/src"  # 앱 소스 폴더: /src로 변경 (HTML 파일 위치)
+          api_location: ""      # API 아직 없으므로 빈 값
+          output_location: ""   # 빌드 출력 없으므로 빈 값
+          skip_app_build: true  # simple HTML이므로 빌드 스킵 (추가)
           ###### End of Repository/Build Configurations ######
 
   close_pull_request_job:

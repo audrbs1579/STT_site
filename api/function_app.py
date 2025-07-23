@@ -1,11 +1,11 @@
 import azure.functions as func
 import logging
-from azure.storage.blob import BlobServiceClient
+from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPermissions
 import requests
 import os
 import time
 import json
-from datetime import datetime, timedelta, timezone
+from datetime import datetime, timedelta
 from urllib.parse import quote  # filename 인코딩
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
@@ -24,14 +24,20 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         if not container_client.exists():
             container_client.create_container()
 
-        # filename 영문/안전 변환 (한국어 문제 방지)
+        # filename 안전 인코딩 (한국어 문제 방지)
         safe_filename = quote(file.filename, safe='')
         blob_client = container_client.get_blob_client(safe_filename)
         logging.info(f"Uploading file: {safe_filename}")
         blob_client.upload_blob(file.stream.read(), overwrite=True)
 
-        sas_token = blob_client.generate_shared_access_signature(
-            permission="r", expiry=datetime.now(timezone.utc) + timedelta(hours=1)
+        # SAS 토큰 생성 (generate_blob_sas 사용)
+        sas_token = generate_blob_sas(
+            account_name=blob_service.account_name,
+            container_name=container_client.container_name,
+            blob_name=blob_client.blob_name,
+            account_key=blob_service.credential.account_key,
+            permission=BlobSasPermissions(read=True),
+            expiry=datetime.utcnow() + timedelta(hours=1)
         )
         sas_url = f"{blob_client.url}?{sas_token}"
         logging.info(f"SAS URL: {sas_url}")
@@ -60,7 +66,7 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         transcription_url = response.headers['Location']
         logging.info(f"Transcription URL: {transcription_url}")
         poll_count = 0
-        while poll_count < 30:  # 타임아웃 방지, 5분 제한
+        while poll_count < 30:  # 5분 타임아웃
             status_res = requests.get(transcription_url, headers=headers)
             logging.info(f"Polling status: {status_res.status_code}")
             if status_res.status_code != 200:

@@ -6,7 +6,7 @@ import os
 import time
 import json
 from datetime import datetime, timedelta
-from urllib.parse import quote  # filename 인코딩
+import uuid  # UUID for filename
 
 app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 
@@ -24,13 +24,14 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         if not container_client.exists():
             container_client.create_container()
 
-        # filename 안전 인코딩 (한국어 문제 방지)
-        safe_filename = quote(file.filename, safe='')
+        # UUID로 filename 재명명 (인코딩 문제 방지, 원본 확장자 유지)
+        original_ext = os.path.splitext(file.filename)[1]  # .mp3 등
+        safe_filename = str(uuid.uuid4()) + original_ext
         blob_client = container_client.get_blob_client(safe_filename)
-        logging.info(f"Uploading file: {safe_filename}")
+        logging.info(f"Uploading file as: {safe_filename}")
         blob_client.upload_blob(file.stream.read(), overwrite=True)
 
-        # SAS 토큰 생성 (generate_blob_sas 사용)
+        # SAS 토큰 생성
         sas_token = generate_blob_sas(
             account_name=blob_service.account_name,
             container_name=container_client.container_name,
@@ -66,7 +67,7 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         transcription_url = response.headers['Location']
         logging.info(f"Transcription URL: {transcription_url}")
         poll_count = 0
-        while poll_count < 30:  # 5분 타임아웃
+        while poll_count < 30:
             status_res = requests.get(transcription_url, headers=headers)
             logging.info(f"Polling status: {status_res.status_code}")
             if status_res.status_code != 200:

@@ -1,6 +1,6 @@
 # 파일 이름: function_app.py
-# 설명: STT 완료 후, Azure AI Language 서비스를 호출하여
-# 전체 내용 요약 및 문장별 핵심 구절을 추출하는 기능이 추가되었습니다.
+# 설명: STT 정확도를 높이기 위한 사용자 지정 어휘 기능과,
+# 더 자연스러운 문장을 생성하는 '추상적 요약' 기능이 추가되었습니다.
 
 import logging
 import os
@@ -15,7 +15,6 @@ from azure.storage.blob import BlobServiceClient, generate_blob_sas, BlobSasPerm
 import requests
 from pydub import AudioSegment
 
-# Language 서비스를 사용하기 위한 새로운 import
 from azure.core.credentials import AzureKeyCredential
 from azure.ai.textanalytics import TextAnalyticsClient
 
@@ -25,19 +24,14 @@ app = func.FunctionApp(http_auth_level=func.AuthLevel.ANONYMOUS)
 def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
     logging.info('Python HTTP trigger function: "UploadAndTranscribe"가 요청을 받았습니다.')
 
-    # --- 환경 변수 로드 (Speech 및 Language 서비스) ---
+    # --- 환경 변수 로드 ---
     try:
-        # 기존 Speech 서비스 환경 변수
         speech_key = os.environ['SPEECH_KEY']
         speech_region = os.environ['SPEECH_REGION']
         conn_str = os.environ['STORAGE_CONNECTION_STRING']
-        
-        # ★★★ 새로 추가된 Language 서비스 환경 변수 ★★★
         language_key = os.environ['LANGUAGE_KEY']
         language_endpoint = os.environ['LANGUAGE_ENDPOINT']
-
     except KeyError as e:
-        logging.error(f"환경 변수 설정 오류: {e}를 찾을 수 없습니다. Azure Function 설정을 확인하세요.")
         return func.HttpResponse(json.dumps({"error": f"설정 오류: {e} 환경 변수가 누락되었습니다."}), status_code=500, mimetype="application/json")
 
     # --- FFmpeg 설정 ---
@@ -57,14 +51,13 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         file = req.files.get('file')
         if not file: return func.HttpResponse(json.dumps({"error": "요청에 파일이 포함되지 않았습니다."}), status_code=400, mimetype="application/json")
         file_bytes = file.stream.read()
-        
         audio = AudioSegment.from_file(io.BytesIO(file_bytes))
         audio = audio.set_frame_rate(16000).set_channels(1)
         wav_buffer = io.BytesIO()
         audio.export(wav_buffer, format="wav")
         wav_buffer.seek(0)
     except Exception as audio_e:
-        return func.HttpResponse(json.dumps({"error": "오디오 파일을 처리할 수 없습니다. 파일이 손상되었거나 지원되지 않는 형식일 수 있습니다."}), status_code=400, mimetype="application/json")
+        return func.HttpResponse(json.dumps({"error": "오디오 파일을 처리할 수 없습니다."}), status_code=400, mimetype="application/json")
 
     # --- 2. STT(음성 텍스트 변환) 수행 ---
     try:
@@ -72,13 +65,23 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         blob_name = f"{str(uuid.uuid4())}.wav"
         blob_client = blob_service_client.get_blob_client(container='audio-files', blob=blob_name)
         blob_client.upload_blob(wav_buffer, overwrite=True)
-
         sas_token = generate_blob_sas(account_name=blob_service_client.account_name, container_name='audio-files', blob_name=blob_name, account_key=blob_service_client.credential.account_key, permission=BlobSasPermissions(read=True), expiry=datetime.utcnow() + timedelta(hours=1))
         sas_url = f"{blob_client.url}?{sas_token}"
         
         stt_endpoint = f"https://{speech_region}.api.cognitive.microsoft.com/speechtotext/v3.2/transcriptions"
         headers = {'Ocp-Apim-Subscription-Key': speech_key, 'Content-Type': 'application/json'}
-        body = {"contentUrls": [sas_url], "locale": "ko-KR", "displayName": "Summary-Enabled Transcription", "properties": {"wordLevelTimestampsEnabled": True, "diarizationEnabled": True}}
+        
+        # ★★★ STT 정확도 향상을 위한 사용자 지정 어휘 추가 ★★★
+        body = {
+            "contentUrls": [sas_url], 
+            "locale": "ko-KR", 
+            "displayName": "Advanced Transcription", 
+            "properties": {
+                "wordLevelTimestampsEnabled": True, 
+                "diarizationEnabled": True,
+                "phrases": "INFJ;MBTI"  # 인식률을 높이고 싶은 단어를 세미콜론(;)으로 구분하여 추가
+            }
+        }
 
         response = requests.post(stt_endpoint, headers=headers, json=body)
         if response.status_code != 201: raise Exception(f"Speech API 오류: {response.text}")
@@ -88,24 +91,23 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
         if not transcription_result: raise Exception("STT 작업 시간 초과 또는 실패")
 
     except Exception as stt_e:
-        logging.error(f"STT 처리 중 오류: {stt_e}", exc_info=True)
         return func.HttpResponse(json.dumps({"error": str(stt_e)}), status_code=500, mimetype="application/json")
 
     # --- 3. Language 서비스로 요약 및 핵심 구절 추출 ---
     try:
         text_analytics_client = TextAnalyticsClient(endpoint=language_endpoint, credential=AzureKeyCredential(language_key))
-        
         phrases = transcription_result.get("recognizedPhrases", [])
         full_text_for_summary = " ".join([p.get("nBest", [{}])[0].get("display", "") for p in phrases])
 
-        # 전체 문서 요약
+        # ★★★ '추상적 요약'으로 변경 및 길이 제어 ★★★
         summary = ""
         if full_text_for_summary.strip():
-            summary_result = text_analytics_client.begin_extract_summary(documents=[full_text_for_summary]).result()
-            for result in summary_result:
+            poller = text_analytics_client.begin_abstract_summary(documents=[full_text_for_summary], sentence_count=3)
+            summary_results = poller.result()
+            for result in summary_results:
                 if not result.is_error:
-                    summary = " ".join([sentence.text for sentence in result.sentences])
-                    break # 첫 번째 문서의 요약만 사용
+                    summary = " ".join([s.text for s in result.summaries])
+                    break
         
         # 각 문장의 핵심 구절 추출
         for phrase in phrases:
@@ -116,21 +118,14 @@ def upload_and_transcribe(req: func.HttpRequest) -> func.HttpResponse:
             else:
                 phrase["key_phrases"] = []
 
-        # 최종 응답 데이터 구성
-        final_response = {
-            "summary": summary,
-            "recognizedPhrases": phrases
-        }
+        final_response = {"summary": summary, "recognizedPhrases": phrases}
         return func.HttpResponse(json.dumps(final_response, ensure_ascii=False), status_code=200, mimetype="application/json; charset=utf-8")
 
     except Exception as lang_e:
-        logging.error(f"Language 서비스 처리 중 오류: {lang_e}", exc_info=True)
-        # Language 서비스에 문제가 생겨도 STT 결과는 반환하도록 처리
         return func.HttpResponse(json.dumps(transcription_result, ensure_ascii=False), status_code=200, mimetype="application/json; charset=utf-8")
 
 
 def poll_for_stt_result(url: str, headers: dict) -> dict:
-    """STT 작업이 완료될 때까지 주기적으로 상태를 확인하고 결과를 반환합니다."""
     poll_count = 0
     while poll_count < 30:
         time.sleep(10)
